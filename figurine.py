@@ -13,15 +13,20 @@ Supported plot methods:
 
     ax.pcolormesh() :
 
+    ax.errorbar() : (partially) Shows upper/lower limit bars, but not connecting line.
 
 Supported customization methods:
+    twinx() (exclusively, does not distinguish for twiny)
     axis xlimit & ylimit
     axis xscale & yscale
     axis xlabel & ylabel
     axis title
-    legend (plot and scatter)
-    linecolor (plot and scatter)
-    linestyle (plot)
+    legend (plot/errorbar and scatter)
+    linecolor (plot/errorbar and scatter)
+    linestyle (plot/errorbar)
+    marker (plot/errorbar)
+    mec (errorbar)
+    mew (errorbar)
 
 @author: sebastian
 """
@@ -60,15 +65,33 @@ def saveFigurine(fig, filename):
 class pyFigure(object):
     def __init__(self, fig):
         self._base = fig
+        self.twins = self.getTwinAxes()
         self.axes = []
-        for ax in self._base.axes:
+        for i, ax in enumerate(self._base.axes):
+#            if i in self.twins.keys():
             self.axes.append(pyAxis(ax))
-        self.length = len(self.axes)
+        self.length = len(self.axes) - len(self.twins)
 
     def save(self, filename):
         wstr = self.getFileString()
         with open(filename, 'w') as ff:
             ff.writelines(wstr)
+
+    def getTwinAxes(self):
+        """
+        Get twin axis occasions by comparing axis boundaries. Assumes twinx() was called if two axes have the same bounds
+        returns
+        -------
+        twins :     dict
+                    twins[key] = item --> key = item.twinx()
+        """
+        bounds = [ax.get_position().bounds for ax in self._base.axes]
+        twins = {}
+        for i, b in enumerate(bounds):
+            if b in bounds[:i]:
+                twins[i] = bounds[:i].index(b)
+        return twins
+
 
     def getFileString(self):
         fstr = ''
@@ -88,7 +111,10 @@ class pyFigure(object):
         # Write axes creation including data sets
         for i_ax, ax in enumerate(self.axes):
             ax_str = 'ax_%d' % i_ax
-            fstr += ax_str + ' = fig.add_subplot(%d, %d, %d)\n' % (subplots_numx, subplots_numy, i_ax+1)
+            if self.twins.has_key(i_ax):
+                fstr += ax_str + ' = ax_%d.twinx()' % self.twins[i_ax]
+            else:
+                fstr += ax_str + ' = fig.add_subplot(%d, %d, %d)\n' % (subplots_numx, subplots_numy, i_ax+1)
             fstr += '\n'
             for i_plot, plot in enumerate(ax.plots):
                 for i_dat, dat_str in enumerate(plot.getDataStringList()):
@@ -108,6 +134,7 @@ class pyFigure(object):
                     fstr += 'z = np.pad(%s.reshape(len(%s)-1, len(%s)-1), ((0,1),(0,1)), \'edge\')\n' % (dat3_str, dat1_str, dat2_str)
                     fstr += 'z = ml.griddata(x.flatten(), y.flatten(), z.flatten(), %s, %s, interp = \'linear\')\n' % (dat1_str, dat2_str)
                     fstr += ax_str + '.pcolormesh(x,y,z%s)\n' % (plot.getConfigString())
+                fstr += '\n'
             fstr += ax.getConfigString(ax_str)
             fstr += ax.getLegendString(ax_str)
         fstr += 'plt.show(block=True)'
@@ -144,6 +171,7 @@ class pyAxis(object):
         cstr += ax_str + '.set_xlim([%.2e, %.2e])' % self.xlim + '\n'
         cstr += ax_str + '.set_ylim([%.2e, %.2e])' % self.ylim + '\n'
         cstr += ax_str + '.set_title(\'%s\')' % self._base.get_title() + '\n'
+        cstr += ax_str + '.set_position(%s)' % str(self._base.get_position().bounds) + '\n'
         cstr += '\n'
         return cstr
 
@@ -178,6 +206,13 @@ class pyPlot(object):
     def getMethodString(self):
         return self.method
 
+    def getColorString(self, color, argname):
+        if isinstance(color, str):
+            cstr = ', %s = \'%s\'' % (argname, color)
+        else:
+            cstr = ', %s = %s' % (argname, str(color))
+        return cstr
+
 class pyLine(pyPlot):
     def __init__(self, plot):
         pyPlot.__init__(self, plot)
@@ -188,11 +223,12 @@ class pyLine(pyPlot):
     def getConfigString(self):
         cstr = super(pyLine, self).getConfigString()
         color = self._base.get_color()
-        if isinstance(color, str):
-            cstr += ', color = \'%s\'' % color
-        else:
-            cstr += ', color = ' + str(color)
+        mec = self._base.get_mec()
+        cstr += self.getColorString(color, 'color')
         cstr += ', linestyle = \'%s\'' % self._base.get_linestyle()
+        cstr += ', marker = \'%s\'' % self._base.get_marker()
+        cstr += self.getColorString(mec, 'mec')
+        cstr += ', mew = \'%s\'' % self._base.get_mew()
         return cstr
 
 class pyScatter(pyPlot):
@@ -211,6 +247,7 @@ class pyScatter(pyPlot):
         else:
             cstr += ', facecolor = ' + '['+','.join(map(str, facecolor))+']'
         return cstr
+
 
 class pyColormesh(pyPlot):
     def __init__(self, plot):
