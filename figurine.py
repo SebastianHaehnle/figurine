@@ -69,7 +69,8 @@ class pyFigure(object):
         self.axes = []
         for i, ax in enumerate(self._base.axes):
 #            if i in self.twins.keys():
-            self.axes.append(pyAxis(ax))
+            self.axes.append(pyAxis(self, ax))
+        self.setColorbars()
         self.length = len(self.axes) - len(self.twins)
 
     def save(self, filename):
@@ -92,6 +93,20 @@ class pyFigure(object):
                 twins[i] = bounds[:i].index(b)
         return twins
 
+    def setColorbars(self):
+        for i, a in enumerate(self.axes):
+            for j, p in enumerate(a.plots):
+                if p.colorbar:
+                    target_axes = [a._base for a in self.axes].index(p.colorbar.ax)
+                    if target_axes < i:
+                        print "Cannot handle colorbar properly in axes prior to data axes"
+                        pass
+                    else:
+                        self.axes[target_axes].contains_colorbar = True
+                        self.axes[target_axes].plots[0].method = 'colorbar'
+                        self.axes[target_axes].plots[0].source_plot_string = 'im_%d_%d' % (i, j)
+                        self.axes[target_axes].source_axis_string = 'ax_%d' % i
+
 
     def getFileString(self):
         fstr = ''
@@ -99,6 +114,7 @@ class pyFigure(object):
         fstr += 'import numpy as np\n'
         fstr += 'import matplotlib.pyplot as plt\n'
         fstr += 'import matplotlib.mlab as ml\n'
+        fstr += 'from mpl_toolkits.axes_grid1 import make_axes_locatable\n'
         fstr += 'import seaborn as sns\n'
         fstr += 'sns.set_style(\'whitegrid\')\n'
         fstr += '\n'
@@ -113,6 +129,8 @@ class pyFigure(object):
             ax_str = 'ax_%d' % i_ax
             if self.twins.has_key(i_ax):
                 fstr += ax_str + ' = ax_%d.twinx()' % self.twins[i_ax]
+            elif ax.contains_colorbar:
+                fstr += ax_str + ' = make_axes_locatable(%s).append_axes(\'right\', size=\'5%s\', pad=0.05)' % ( ax.source_axis_string, '%')
             else:
                 fstr += ax_str + ' = fig.add_subplot(%d, %d, %d)\n' % (subplots_numx, subplots_numy, i_ax+1)
             fstr += '\n'
@@ -121,19 +139,21 @@ class pyFigure(object):
                     var_str = 'dat_%d_%d_%d' % (i_ax, i_plot, i_dat)
                     fstr += var_str + ' = ' + dat_str + '\n'
                     fstr += '\n'
-                if plot.length == 2:
+                if plot.method in ['plot', 'scatter']:
                     dat1_str = 'dat_%d_%d_0' % (i_ax, i_plot)
                     dat2_str = 'dat_%d_%d_1' % (i_ax, i_plot)
                     fstr += ax_str + '.%s(%s, %s%s)' % (plot.getMethodString(), dat1_str, dat2_str, plot.getConfigString())
                     fstr += '\n'
-                elif plot.length == 3 and plot.method == 'pcolormesh':
+                elif plot.method == 'pcolormesh':
                     dat1_str = 'dat_%d_%d_0' % (i_ax, i_plot)
                     dat2_str = 'dat_%d_%d_1' % (i_ax, i_plot)
                     dat3_str = 'dat_%d_%d_2' % (i_ax, i_plot)
                     fstr += 'x,y = np.meshgrid(%s, %s)\n' % (dat1_str, dat2_str)
-                    fstr += 'z = np.pad(%s.reshape(len(%s)-1, len(%s)-1), ((0,1),(0,1)), \'edge\')\n' % (dat3_str, dat1_str, dat2_str)
+                    fstr += 'z = np.pad(np.array(%s).reshape(len(%s)-1, len(%s)-1), ((0,1),(0,1)), \'edge\')\n' % (dat3_str, dat1_str, dat2_str)
                     fstr += 'z = ml.griddata(x.flatten(), y.flatten(), z.flatten(), %s, %s, interp = \'linear\')\n' % (dat1_str, dat2_str)
-                    fstr += ax_str + '.pcolormesh(x,y,z%s)\n' % (plot.getConfigString())
+                    fstr += 'im_%d_%d = %s.pcolormesh(x,y,z%s)\n' % (i_ax, i_plot, ax_str, plot.getConfigString())
+                elif plot.method == 'colorbar':
+                    fstr += 'fig.colorbar(%s, cax = %s)' % (plot.source_plot_string, ax_str)
                 fstr += '\n'
             fstr += ax.getConfigString(ax_str)
             fstr += ax.getLegendString(ax_str)
@@ -143,34 +163,31 @@ class pyFigure(object):
 
 
 class pyAxis(object):
-    def __init__(self, ax):
+    def __init__(self, parent, ax):
+        self.parent = parent
         self._base = ax
         self.plots = []
         for line in ax.lines:
-            self.plots.append(pyLine(line))
+            self.plots.append(pyLine(self, line))
         for item in ax.collections:
             if 'PathCollection' in str(type(item)):
-                self.plots.append(pyScatter(item))
+                self.plots.append(pyScatter(self, item))
             if 'QuadMesh' in str(type(item)):
-                self.plots.append(pyColormesh(item))
+                self.plots.append(pyColormesh(self, item))
         self.length = len(self.plots)
-        # Get config info
-        self.xscale = self._base.get_xscale()
-        self.yscale = self._base.get_yscale()
-        self.xlabel = self._base.get_xlabel()
-        self.ylabel = self._base.get_ylabel()
-        self.xlim = self._base.get_xlim()
-        self.ylim = self._base.get_ylim()
+        self.contains_colorbar = False
+        self.source_axis_string  = ''
 
     def getConfigString(self, ax_str):
         cstr = ''
-        cstr += ax_str + '.set_xscale(\'%s\')' % self.xscale + '\n'
-        cstr += ax_str + '.set_yscale(\'%s\')' % self.yscale + '\n'
-        cstr += ax_str + '.set_xlabel(\'%s\')' % self.xlabel + '\n'
-        cstr += ax_str + '.set_ylabel(\'%s\')' % self.ylabel + '\n'
-        cstr += ax_str + '.set_xlim([%.2e, %.2e])' % self.xlim + '\n'
-        cstr += ax_str + '.set_ylim([%.2e, %.2e])' % self.ylim + '\n'
-        cstr += ax_str + '.set_title(\'%s\')' % self._base.get_title() + '\n'
+        if not self.contains_colorbar:
+            cstr += ax_str + '.set_xscale(\'%s\')' % self._base.get_xscale() + '\n'
+            cstr += ax_str + '.set_yscale(\'%s\')' % self._base.get_yscale() + '\n'
+            cstr += ax_str + '.set_xlabel(\'%s\')' % self._base.get_xlabel() + '\n'
+            cstr += ax_str + '.set_ylabel(\'%s\')' % self._base.get_ylabel() + '\n'
+            cstr += ax_str + '.set_xlim([%.2e, %.2e])' % self._base.get_xlim()+ '\n'
+            cstr += ax_str + '.set_ylim([%.2e, %.2e])' % self._base.get_ylim() + '\n'
+            cstr += ax_str + '.set_title(\'%s\')' % self._base.get_title() + '\n'
         cstr += ax_str + '.set_position(%s)' % str(self._base.get_position().bounds) + '\n'
         cstr += '\n'
         return cstr
@@ -182,11 +199,18 @@ class pyAxis(object):
             return ''
 
 class pyPlot(object):
-    def __init__(self, plot):
+    def __init__(self, parent, plot):
+        self.parent = parent
         self._base = plot
+        self.colorbar = None
         self.method = 'plot'
-        self.data = []
+        self.source_plot_string  = ''
+#        self.data = []
         # Get config info
+
+    @property
+    def data(self):
+        return []
 
     @property
     def length(self):
@@ -196,6 +220,7 @@ class pyPlot(object):
         strings = []
         for data in self.data:
             strings.append('['+','.join(map(str, data))+']')
+            strings[-1] = strings[-1].replace('inf', 'np.inf')
         return strings
 
     def getConfigString(self):
@@ -214,11 +239,16 @@ class pyPlot(object):
         return cstr
 
 class pyLine(pyPlot):
-    def __init__(self, plot):
-        pyPlot.__init__(self, plot)
+    def __init__(self, parent, plot):
+        pyPlot.__init__(self, parent, plot)
         self.method = 'plot'
+
+    @property
+    def data(self):
+        data = []
         for item in self._base.get_data():
-            self.data.append(item)
+            data.append(item)
+        return data
 
     def getConfigString(self):
         cstr = super(pyLine, self).getConfigString()
@@ -232,12 +262,17 @@ class pyLine(pyPlot):
         return cstr
 
 class pyScatter(pyPlot):
-    def __init__(self, plot):
-        pyPlot.__init__(self, plot)
+    def __init__(self, parent, plot):
+        pyPlot.__init__(self, parent, plot)
         self.method = 'scatter'
+
+    @property
+    def data(self):
+        data = []
         self._base.set_offset_position('data')
         for item in self._base.get_offsets().transpose():
-            self.data.append(item)
+            data.append(item)
+        return data
 
     def getConfigString(self):
         cstr = super(pyScatter, self).getConfigString()
@@ -250,15 +285,33 @@ class pyScatter(pyPlot):
 
 
 class pyColormesh(pyPlot):
-    def __init__(self, plot):
-        pyPlot.__init__(self, plot)
+    def __init__(self, parent, plot):
+        pyPlot.__init__(self, parent, plot)
+        self.colorbar = self._base.colorbar
         self.method = 'pcolormesh'
-        self.data.append(np.unique(self._base._coordinates[:,:,0]))
-        self.data.append(np.unique(self._base._coordinates[:,:,0]))
-        self.data.append(self._base.get_array())
+
+    @property
+    def data(self):
+        data = []
+        if self.method == 'pcolormesh':
+            data.append(np.unique(self._base._coordinates[:,:,0]))
+            data.append(np.unique(self._base._coordinates[:,:,1]))
+            data.append(self._base.get_array())
+        else:
+            data = []
+        return data
+
+    def getCmapString(self):
+        try:
+            cmap_name = self._base.cmap.name
+            return ', cmap = plt.get_cmap(\'%s\')' % cmap_name
+        except ValueError:
+            print "Colormap name not supported in Figurine"
+            return ''
 
     def getConfigString(self):
         cstr = ''
+        cstr += self.getCmapString()
         return cstr
 
 
